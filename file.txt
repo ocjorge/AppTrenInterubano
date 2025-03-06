@@ -1,0 +1,106 @@
+-- Create tables for the Tren Interurbano app
+
+-- Users table (extending the auth.users)
+create table public.users (
+  id uuid references auth.users not null primary key,
+  email text not null,
+  name text,
+  created_at timestamp with time zone default now(),
+  last_access timestamp with time zone default now()
+);
+
+-- Stations table
+create table public.stations (
+  id uuid not null default gen_random_uuid() primary key,
+  name text not null,
+  latitude double precision not null,
+  longitude double precision not null,
+  address text,
+  services jsonb
+);
+
+-- Routes table
+create table public.routes (
+  id uuid not null default gen_random_uuid() primary key,
+  name text not null,
+  color text not null,
+  stations jsonb not null,
+  type text not null check (type in ('MAIN', 'FEEDER')),
+  first_departure text not null,
+  last_departure text not null
+);
+
+-- Schedules table
+create table public.schedules (
+  id uuid not null default gen_random_uuid() primary key,
+  route_id uuid references public.routes not null,
+  station_id uuid references public.stations not null,
+  weekday text not null check (weekday in ('MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY')),
+  departure_times jsonb not null
+);
+
+-- Access history table
+create table public.access_history (
+  id uuid not null default gen_random_uuid() primary key,
+  user_id uuid references public.users not null,
+  station_id uuid references public.stations not null,
+  timestamp timestamp with time zone default now(),
+  is_valid boolean not null default true,
+  qr_code text not null
+);
+
+-- Alerts table
+create table public.alerts (
+  id uuid not null default gen_random_uuid() primary key,
+  title text not null,
+  description text not null,
+  type text not null check (type in ('DELAY', 'CANCELLATION', 'MAINTENANCE', 'SECURITY', 'INFO')),
+  route_id uuid references public.routes,
+  station_id uuid references public.stations,
+  start_time timestamp with time zone default now(),
+  end_time timestamp with time zone,
+  is_active boolean not null default true
+);
+
+-- Storage for profile pictures
+insert into storage.buckets (id, name)
+values ('profile_pictures', 'Profile Pictures');
+
+-- Set up RLS (Row Level Security)
+alter table public.users enable row level security;
+alter table public.access_history enable row level security;
+
+-- Policies for users
+create policy "Users can view their own data" on public.users
+for select using (auth.uid() = id);
+
+create policy "Users can update their own data" on public.users
+for update using (auth.uid() = id);
+
+-- Policies for access_history
+create policy "Users can view their own access history" on public.access_history
+for select using (auth.uid() = user_id);
+
+-- Policies for storage
+create policy "Anyone can view profile pictures" on storage.objects
+for select using (bucket_id = 'profile_pictures');
+
+create policy "Users can upload their own profile picture" on storage.objects
+for insert with check (
+  bucket_id = 'profile_pictures' AND
+  (storage.foldername(name))[1] = auth.uid()::text
+);
+
+-- Trigger to create user profile after signup
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.users (id, email)
+  values (new.id, new.email);
+  return new;
+end;
+$$ language plpgsql security definer;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
